@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+*.pickle
+*.pkl
+.venv/
+venv/
+.ipynb_checkpoints/
+.DS_Store

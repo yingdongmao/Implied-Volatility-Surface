@@ -157,9 +157,36 @@ src/
   constrained_linear_regression.py  non-negativity-constrained smile regression
 examples/
   synthetic_demo.py               full pipeline on fabricated data — NO WRDS needed
-  run_from_wrds.py                reference driver on real OptionMetrics data (needs WRDS)
+  run_from_wrds.py                state variables on real OptionMetrics data (needs WRDS)
+  run_risk_premia_from_wrds.py    risk premia on real OptionMetrics data (needs WRDS)
 requirements.txt
 ```
+
+The two WRDS drivers are deliberately separate: `run_from_wrds.py` needs only the
+day's option chain, while `run_risk_premia_from_wrds.py` additionally needs each
+contract's **next-day** quote and the forward curve. Merge their outputs on
+`(secid, date)` and apply `risk_premia.return_risk_premium` to get `RRP^v`.
+
+### Three conventions the risk-premium code pins down
+
+Independent replications diverge on these, so they are fixed in the library
+rather than left to the caller:
+
+1. **Contract level.** The regression runs across the day's actual contracts,
+   which is what the factor structure is derived for — not across nodes of the
+   smoothed surface.
+2. **European value, priced internally.** `risk_premia.european_value` prices the
+   contract from its own OptionMetrics IV at `t` *and* at `t+1`; the underlying,
+   the implied volatility and the remaining maturity all move. Passing a `t+1`
+   value that holds the IV fixed sets `dI/I = 0` and drives the volatility risk
+   premium to zero by construction.
+3. **Intercept retained.** The gamma factor loads on the constant `1/2` for every
+   contract. Dropping the intercept forces that P&L into the other three
+   coefficients and biases the volatility risk premium by roughly a factor of
+   three on US equity options.
+
+Contracts are matched from `t` to `t+1` on `optionid`, which survives the strike
+re-listing that follows a stock split; matching on strike does not.
 
 ## Quick start
 
@@ -171,7 +198,8 @@ python examples/synthetic_demo.py
 
 # 2. Reproduce on real OptionMetrics data (needs a WRDS account):
 export WRDS_USERNAME=your_username        # Windows: set WRDS_USERNAME=...
-python examples/run_from_wrds.py
+python examples/run_from_wrds.py              # -> state variables
+python examples/run_risk_premia_from_wrds.py  # -> risk premia
 ```
 
 `synthetic_demo.py` prints the smoothed surface, the four state variables, the

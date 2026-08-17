@@ -57,18 +57,17 @@ def main():
     print(sv.round(4), "\n")
 
     # 3. realized risk premia + RRP^v
-    #    build a (t, t+1) chain so option/underlying value changes exist
-    q = quotes.rename(columns={'maturity': 'mat'})
-    q['tau'] = q['mat'] / 365.0
-    # crude European value proxy (illustrative only) and a +1% underlying move
-    from scipy.stats import norm
-    d1 = (np.log(q['spot'] / q['strike']) + 0.5 * q['iv'] ** 2 * q['tau']) / (q['iv'] * np.sqrt(q['tau']))
-    d2 = d1 - q['iv'] * np.sqrt(q['tau'])
-    q['value'] = q['spot'] * norm.cdf(d1) - q['strike'] * norm.cdf(d2)
-    q['spot_next'] = q['spot'] * 1.01
-    d1n = (np.log(q['spot_next'] / q['strike']) + 0.5 * q['iv'] ** 2 * q['tau']) / (q['iv'] * np.sqrt(q['tau']))
-    d2n = d1n - q['iv'] * np.sqrt(q['tau'])
-    q['value_next'] = q['spot_next'] * norm.cdf(d1n) - q['strike'] * norm.cdf(d2n)
+    #    Build the t+1 leg of the SAME contracts.  All three inputs must move:
+    #    the underlying, the implied volatility, and the remaining maturity.
+    #    (A t+1 leg with the IV held fixed would set dI/I = 0 and the volatility
+    #    risk premium -- the whole point of the exercise -- would be zero by
+    #    construction.)  ``estimate_risk_premia`` prices the European contract
+    #    at both dates itself.
+    q = quotes.copy()
+    q['tau'] = q['maturity'] / 365.0
+    q['tau_next'] = q['tau'] - 1.0 / 365.0            # one day passes
+    q['spot_next'] = q['spot'] * 1.01                 # +1% underlying move
+    q['iv_next'] = q['iv'] * 0.98                     # -2% implied-vol move
 
     rp = estimate_risk_premia(q)
     print("realized risk premia carried by state variables:")

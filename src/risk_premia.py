@@ -64,6 +64,30 @@ def cash_gamma(spot, strike, iv, tau):
     return spot * norm.pdf(d1) / (iv * np.sqrt(tau))
 
 
+def european_value(spot, strike, iv, tau, option_type):
+    """
+    European (Black) option value on the underlying `spot`, zero financing.
+
+        call = U N(d1) - K N(d2),   put = call - U + K   (put-call parity)
+        d1   = (ln(U/K) + I^2 tau / 2) / (I sqrt(tau)),   d2 = d1 - I sqrt(tau)
+
+    OptionMetrics reports the implied volatility of the AMERICAN contract (from
+    its binomial tree).  Following Carr-Wu, that IV is used here to price the
+    matching EUROPEAN contract, which is the object the factor structure below
+    is derived for.  Discounting is omitted because the underlying passed in is
+    the forward (see ``estimate_risk_premia``), so the value is already
+    expressed in time-t+tau currency; the delta-hedged, cash-gamma-scaled ratio
+    is invariant to a common discount factor anyway.
+
+    This is deliberately NOT left to the caller: pricing the option value is
+    where independent replications of this pipeline diverge most often.
+    """
+    d1 = _d1(spot, strike, iv, tau)
+    d2 = d1 - iv * np.sqrt(tau)
+    call = spot * norm.cdf(d1) - strike * norm.cdf(d2)
+    return np.where(np.asarray(option_type) == 'C', call, call - spot + strike)
+
+
 # --------------------------------------------------------------------------- #
 # Cross-sectional estimation of f_t
 # --------------------------------------------------------------------------- #
@@ -73,16 +97,24 @@ def estimate_risk_premia(quotes: pd.DataFrame, min_contracts: int = 8) -> pd.Ser
 
     Parameters
     ----------
-    quotes : DataFrame, one row per contract, columns
-        iv          BMS implied volatility at t (decimal)
+    quotes : DataFrame, one row per contract, ALL of
+        iv          BMS implied volatility at t     (decimal)
+        iv_next     BMS implied volatility at t+1   (SAME contract)
+        spot        underlying at t                 (forward; see below)
+        spot_next   underlying at t+1
+        tau         maturity in years at t
+        tau_next    maturity in years at t+1        (the contract ages)
         strike      strike K
-        spot        underlying price S at t
-        spot_next   underlying price S at t+1 (next interval/day)
-        value       (European) option value at t
-        value_next  (European) option value at t+1
-        tau         maturity in years
         option_type 'C' / 'P'
     min_contracts : minimum effective contracts to attempt the regression.
+
+    The option value at t and t+1 is priced INSIDE this function with
+    ``european_value``; it is not an input.  Pass the FORWARD as ``spot`` /
+    ``spot_next`` (OptionMetrics ``fwdprd``) so no discounting is needed.
+
+    The regression carries an INTERCEPT: the gamma factor loads on the constant
+    1/2 for every contract, so without it the gamma P&L is forced into the other
+    three coefficients and the volatility risk premium is badly biased.
 
     Returns
     -------
@@ -91,18 +123,31 @@ def estimate_risk_premia(quotes: pd.DataFrame, min_contracts: int = 8) -> pd.Ser
     where 'vrp' is the volatility risk premium (loading on Vega).
     """
     idx = ['gamma_rp', 'vrp', 'vov_rp', 'cov_rp', 'R2', 'nobs']
-    df = quotes.dropna(subset=['iv', 'value', 'value_next',
-                               'spot', 'spot_next', 'tau', 'strike']).copy()
-    df = df[(df['iv'] > 0) & (df['tau'] > 0)]
+    need = ['iv', 'iv_next', 'spot', 'spot_next', 'tau', 'tau_next',
+            'strike', 'option_type']
+    missing = [c for c in need if c not in quotes.columns]
+    if missing:
+        raise KeyError("estimate_risk_premia needs column(s) %s" % missing)
+
+    df = quotes.dropna(subset=[c for c in need if c != 'option_type']).copy()
+    df = df[(df['iv'] > 0) & (df['iv_next'] > 0) &
+            (df['tau'] > 0) & (df['tau_next'] > 0)]
     if len(df) < min_contracts:
         return pd.Series([np.nan] * len(idx), index=idx)
 
     iv, S, K, tau = df['iv'].values, df['spot'].values, df['strike'].values, df['tau'].values
+    cp = df['option_type'].values
+
+    # European value of the SAME contract at t and at t+1: the underlying, the
+    # implied volatility AND the remaining maturity all move.
+    value = european_value(S, K, iv, tau, cp)
+    value_next = european_value(df['spot_next'].values, K, df['iv_next'].values,
+                                df['tau_next'].values, cp)
 
     # delta-hedged P&L scaled by cash gamma  ->  r_i
-    dC = df['value_next'].values - df['value'].values
-    dS = df['spot_next'].values - df['spot'].values
-    delta = bms_delta(S, K, iv, tau, df['option_type'].values)
+    dC = value_next - value
+    dS = df['spot_next'].values - S
+    delta = bms_delta(S, K, iv, tau, cp)
     cg = cash_gamma(S, K, iv, tau)
     r = (dC - delta * dS) / cg
 
